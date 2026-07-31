@@ -1,0 +1,98 @@
+---
+title: "Filtro ENOE León 2025"
+format: html
+editor: visual
+---
+
+```{r}
+#| include: false
+
+library(tidyverse)
+library(RColorBrewer)
+library(writexl)
+library(openxlsx)
+library(kableExtra)
+library(readxl)
+
+```
+
+
+**Nota importante**: Para compilar este documento es necesario descargar de la página de la ENOE-> Datos abiertos los archivos de datos de cada trimestre del año 2025, y colocarlos en la carpeta `data_raw`. El enlace es el siguiente:
+https://www.inegi.org.mx/programas/enoe/15ymas/#datos_abiertos
+
+El archivo generado `enoe_leon_2025.csv` se encuentra en la carpeta `data_input` y contiene los datos de la ENOE 2025 para el municipio de León, Guanajuato. Por lo tanto, no es fundamental compilar este archivo para continuar con el análisis posterior.
+
+# Cargar datos y filtros
+
+`ent`: 11 Guanajuato `mun`: 20 León `r_def`: 0 Entrevista completa `sex` : datos completos `eda`: edad mayor o igual a 15 años
+
+Se eliminaron las columas `cs_p21_des` y `cs_p23_des`, pues al ser de texto, contienene múltiples caracteres que generan problemas.
+
+A partir del tercer semestre algunas columnas cambiaron de nombre con el prefijo *cve*.
+
+```{r}
+#| code-fold: true
+
+enoe_1t <- read_csv("./data_raw/conjunto_de_datos_sdem_enoe_2025_1t.csv")
+enoe_1t <- enoe_1t |> dplyr::select(-cs_p21_des, -cs_p23_des)
+enoe_1t <- enoe_1t |> filter(ent == 11, mun == 20, r_def == 0, !is.na(sex))
+enoe_1t <- enoe_1t |> filter(eda>=15)
+names_prev <- names(enoe_1t)
+
+                                
+
+enoe_2t <- read_csv("./data_raw/conjunto_de_datos_sdem_enoe_2025_2t.csv")
+enoe_2t <- enoe_2t |> dplyr::select(-cs_p21_des, -cs_p23_des)
+enoe_2t <- enoe_2t |> filter(ent == 11, mun == 20, r_def == 0, !is.na(sex))
+enoe_2t <- enoe_2t |> filter(eda>=15)
+
+
+enoe_3t <- read_csv("./data_raw/conjunto_de_datos_sdem_enoe_2025_3t.csv", col_types = cols(cs_p14_c = col_double()))
+enoe_spec <- spec(enoe_3t)
+enoe_3t <- enoe_3t |> dplyr::select(-cs_p21_des, -cs_p23_des, -cvegeo)
+names(enoe_3t) <- names_prev
+enoe_3t <- enoe_3t |> filter(ent == 11, mun == 20, r_def == 0, !is.na(sex))
+enoe_3t <- enoe_3t |> filter(eda>=15)
+
+
+enoe_4t <- read_csv("./data_raw/conjunto_de_datos_sdem_enoe_2025_4t.csv", col_types = enoe_spec)
+enoe_4t <- enoe_4t |> dplyr::select(-cs_p21_des, -cs_p23_des, -cvegeo)
+names(enoe_4t) <- names_prev
+enoe_4t <- enoe_4t |> filter(ent == 11, mun == 20, r_def == 0, !is.na(sex))
+enoe_4t <- enoe_4t |> filter(eda>=15)
+
+                                
+enoe_2025 <- bind_rows(enoe_1t, enoe_2t, enoe_3t, enoe_4t)
+
+
+
+```
+
+```{r}
+#| code-fold: true
+
+enoe_2025 <- enoe_2025 |>
+  dplyr::select(
+    # identificación / panel
+    con, upm, v_sel, n_hog, n_ren,
+    n_ent, per, mes_cal,
+    # diseño y ponderadores
+    fac_tri, est_d_tri, t_loc_tri,
+    # demografía / universo
+    sex, nac_dia, nac_mes, nac_anio, eda, c_res, eda7c, eda12c,
+    # actividad y ocupación
+    clase1, clase2, clase3, pos_ocu, c_ocu11c, rama_est1,
+    c_inac5c,
+    # ingreso / jornada  (salario = SM mensual, para convertir ing7c a pesos)
+    ingocup, ing7c, ing_x_hrs, hrsocup, salario,
+    # urbano/rural
+    ur,
+    # informalidad
+    emp_ppal, seg_soc,
+    # escolaridad
+    niv_ins, anios_esc
+  )
+
+
+write_csv(enoe_2025, "./data_input/enoe_leon_2025.csv")
+```

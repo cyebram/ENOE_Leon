@@ -1,0 +1,386 @@
+---
+title: "Datos tabulados ENOE. 3t 2025."
+format: html
+editor: visual
+---
+
+```{r}
+#| include: false
+
+library(tidyverse)
+library(RColorBrewer)
+library(writexl)
+library(openxlsx)
+library(kableExtra)
+library(readxl)
+library(tidyr)
+```
+
+# Población
+
+Distribución de la población por sexo y grupo de edad. Hoja TAB01.
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+
+data_pob_complete <- read_excel("./data_input/A_1_Pob_Edad_Sexo_complete_3t.xlsx")
+orden_grupos_edad <- c(
+  "Menores de 1 año", "1 a 4 años","5 a 9 años", "10 a 11 años", "12 a 14 años",
+  "15 a 19 años", "20 a 24 años", "25 a 29 años", "30 a 34 años",
+  "35 a 39 años", "40 a 44 años", "45 a 49 años", "50 a 54 años",
+  "55 a 59 años", "60 a 64 años", "65 a 69 años", "70 a 74 años",
+  "75 años y más"
+)
+
+data_pob_complete$Grupo <- factor(data_pob_complete$Grupo, levels = orden_grupos_edad)
+data_pob_complete$Sexo <- factor(data_pob_complete$Sexo, levels = c("Hombres", "Mujeres"))
+
+grafica_piramide <- function(pob)
+{  
+pob <- pob |> dplyr::select(Sexo, Grupo, Poblacion) 
+
+pob <- pob |> 
+  mutate(
+    pob_dir = ifelse(Sexo == "Hombres", -Poblacion, Poblacion)  # signo para el lado
+  )
+
+# Límite simétrico del eje (redondeado a la decena de millar superior)
+lim <- ceiling(max(pob$Poblacion) / 10000) * 10000
+cortes <- seq(-lim, lim, by = 10000)
+
+colores <- c("Hombres" = "#18365d",  
+             "Mujeres" = "#c4302b")  
+
+etiquetas <- pob |>  distinct(Grupo)
+
+p <- ggplot(pob, aes(x = pob_dir, y = Grupo, fill = Sexo)) +
+  geom_col(width = 0.78) +
+  geom_vline(xintercept = 0, color = "white", linewidth = 0.4) +
+  # Etiqueta del grupo quinquenal centrada sobre el eje 0.
+  # fill = color del fondo para enmascarar las barras detrás; label.size = 0 quita el borde.
+  geom_label(
+    data = etiquetas,
+    aes(x = 0, y = Grupo, label = Grupo),
+    inherit.aes = FALSE,
+    fill = "#efefef", color = "grey15",
+    linewidth = 0, label.padding = unit(0.12, "lines"),
+    size = 3
+  ) +
+  scale_x_continuous(
+    breaks = cortes,
+    labels = function(x) ifelse(x == 0, "0", paste0(abs(x) / 1000, "k")),
+    limits = c(-lim, lim),
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  scale_fill_manual(
+    values = colores,
+    labels = c("Hombres" = "Hombre", "Mujeres" = "Mujer"),  # leyenda como en la figura
+    name   = NULL
+  ) +
+  labs(
+    title   = "Pirámide poblacional de León 3er trimestre 2025",
+    x = NULL, y = NULL,
+    caption = "ENOE"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.background   = element_rect(fill = "#efefef", color = NA),
+    panel.background  = element_rect(fill = "#efefef", color = NA),
+    panel.grid.major.x = element_line(color = "#d9d9d9", linewidth = 0.4),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.text.y  = element_blank(),   # la figura original no rotula los grupos
+    axis.ticks   = element_blank(),
+    plot.title   = element_text(hjust = 0.5, size = 14, margin = margin(b = 15)),
+    plot.caption = element_text(hjust = 0, color = "#3a6ea5", margin = margin(t = 15)),
+    legend.position = "bottom",
+    legend.key.size = unit(0.9, "lines")
+  )
+
+return(p)
+}
+
+piramide_complete <- grafica_piramide(data_pob_complete)
+print(piramide_complete)
+
+```
+
+Distribución de la población por sexo y grupo de edad mayores de 15 años. Hoja TAB02.
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+
+data_pob <- read_excel("./data_input/A_2_Pob_Edad_Sexo_3t.xlsx")
+orden_grupos_edad <- c(
+  "15 a 19 años", "20 a 24 años", "25 a 29 años", "30 a 34 años",
+  "35 a 39 años", "40 a 44 años", "45 a 49 años", "50 a 54 años",
+  "55 a 59 años", "60 a 64 años", "65 años y más"
+)
+
+data_pob$Grupo <- factor(data_pob$Grupo, levels = orden_grupos_edad)
+data_pob$Sexo <- factor(data_pob$Sexo, levels = c("Hombres", "Mujeres"))
+
+
+
+piramide_pob <- grafica_piramide(data_pob)
+print(piramide_pob)
+
+```
+
+# PEA y PNEA
+
+Población de 15 años y más por sexo y grupos de edad, según condición de actividad, ocupación y dosponibilidad para trabajar. Hoja TAB02.
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+
+data_pea_pnea <- read_excel("./data_input/A_3_PEA_PNEA_3t.xlsx")
+
+orden_grupos_edad <- c(
+  "15 a 19 años", "20 a 24 años", "25 a 29 años", "30 a 34 años",
+  "35 a 39 años", "40 a 44 años", "45 a 49 años", "50 a 54 años",
+  "55 a 59 años", "60 a 64 años", "65 años y más")
+orden_condicion <- c("PEA Ocupada", "PEA Desocupada", "PNEA Disponible", "PNEA No Disponible")
+
+data_pea_pnea$Grupo <- factor(data_pea_pnea$Grupo, levels = orden_grupos_edad)
+data_pea_pnea$Sexo <- factor(data_pea_pnea$Sexo, levels = c("Hombres", "Mujeres"))
+data_pea_pnea$Condicion <- factor(data_pea_pnea$Condicion, levels = orden_condicion)
+
+colores <- c("PEA Ocupada" = "#1b7837", "PEA Desocupada" = "#3a6ea5", 
+             "PNEA Disponible" = "#feb24c", "PNEA No Disponible" = "#c4302b")
+
+# Función: diagrama de barras apiladas para un sexo
+grafico_pea_pnea_general <- function(sx) {
+  ggplot(filter(data_pea_pnea, Sexo == sx),
+         aes(x = Grupo, y = Poblacion, fill = Condicion)) +
+    geom_col(width = 0.75) +
+    scale_fill_manual(values = colores, name = NULL) +
+    scale_y_continuous(labels = scales::comma,
+                       expand = expansion(mult = c(0, 0.05))) +
+    labs(title = paste0("PEA y PNEA - ", sx),
+         x = NULL, y = "Personas") +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x        = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank(),
+      legend.position    = "top",
+      plot.title         = element_text(face = "bold", size = 13)
+    )
+}
+
+p_hombres <- grafico_pea_pnea_general("Hombres")
+p_mujeres <- grafico_pea_pnea_general("Mujeres")
+
+print(p_hombres)
+print(p_mujeres)
+
+```
+
+Para el análisis de elección discreta, es conveniente agrupar la población en dos categorías: PEA y PNEA. La población PEA Desocupada es considerada como PNEA, dado que no perciben salario.
+
+Población de 15 años y más por sexo y grupos de edad, según condición de actividad. Hoja TAB02.
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+
+
+data_pea_pnea$Condicion_estudio <- factor(data_pea_pnea$Condicion_estudio, levels = c("PEA", "PNEA"))
+
+colores <- c("PEA" = "#1b7837", "PNEA" = "#feb24c")
+
+# Función: diagrama de barras apiladas para un sexo
+grafico_pea_pnea <- function(sx) {
+  ggplot(filter(data_pea_pnea, Sexo == sx),
+         aes(x = Grupo, y = Poblacion, fill = Condicion_estudio)) +
+    geom_col(width = 0.75) +
+    scale_fill_manual(values = colores, name = NULL) +
+    scale_y_continuous(labels = scales::comma,
+                       expand = expansion(mult = c(0, 0.05))) +
+    labs(title = paste0("PEA y PNEA - ", sx),
+         x = NULL, y = "Personas") +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x        = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank(),
+      legend.position    = "top",
+      plot.title         = element_text(face = "bold", size = 13)
+    )
+}
+
+p_hombres <- grafico_pea_pnea("Hombres")
+p_mujeres <- grafico_pea_pnea("Mujeres")
+
+print(p_hombres)
+print(p_mujeres)
+
+```
+
+## PNEA Actividad
+
+Población no económicamente activa por sexoy grupos de edad, según tipo de actividad no económica. Hoja TAB07.
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+
+data_pnea_actividad_b <- read_excel("./data_input/A_4_PNEA_Actividad_3t.xlsx")
+
+orden_grupos_edad <- c(
+  "15 a 19 años", "20 a 29 años", "30 a 39 años",
+  "40 a 49 años", "50 a 59 años", "60 años y más")
+
+orden_condicion <- c("Estudiantes", "Domésticos", "Pensionados", "Incapacidad", "Otros")
+
+data_pnea_actividad_b$Grupo <- factor(data_pnea_actividad_b$Grupo, levels = orden_grupos_edad)
+data_pnea_actividad_b$Sexo <- factor(data_pnea_actividad_b$Sexo, levels = c("Hombres", "Mujeres"))
+data_pnea_actividad_b$Condicion <- factor(data_pnea_actividad_b$Condicion, levels = orden_condicion)
+
+
+
+# Función: diagrama de barras apiladas para un sexo
+grafico_actividad_sexo <- function(sx) {
+  ggplot(filter(data_pnea_actividad_b, Sexo == sx),
+         aes(x = Grupo, y = Poblacion, fill = Condicion)) +
+    geom_col(width = 0.75) +
+    scale_fill_brewer(palette = "Set1", name = NULL) +
+    scale_y_continuous(labels = scales::comma,
+                       expand = expansion(mult = c(0, 0.05))) +
+    labs(title = paste0("PNEA y Actividad - ", sx),
+         x = NULL, y = "Personas") +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x        = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank(),
+      legend.position    = "top",
+      plot.title         = element_text(face = "bold", size = 13)
+    )
+}
+
+p_hombres <- grafico_actividad_sexo("Hombres")
+p_mujeres <- grafico_actividad_sexo("Mujeres")
+
+print(p_hombres)
+print(p_mujeres)
+```
+
+# División ocupacional
+
+Proporción de población ocupada por sexo y grupo de ocupación. Hoja TAB08.
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+#| fig-width: 10
+
+data_ocup <- read_excel("./data_input/A_5_PO_ocupacion_3t.xlsx")
+
+orden_ocupacion <- c("Profesionales, técnicos y trabajadores del arte", 
+                     "Trabajadores de la educación", "Funcionarios y directivos", 
+                     "Oficinistas", "Trabajadores industriales, artesanos y ayudantes", 
+                     "Comerciantes", "Operadores de transportes", "Trabajadores en servicios personales", "Trabajadores en protección y vigilancia", "Trabajadores agropecuarios", "No especificado")
+
+data_ocup$Grupo_ocupacion <- factor(data_ocup$Grupo_ocupacion, levels = orden_ocupacion)
+data_ocup$Sexo <- factor(data_ocup$Sexo, levels = c("Hombres", "Mujeres"))
+
+
+
+
+ggplot(data_ocup, aes(x = Sexo, y = Porcentaje_est_sexo, fill = Grupo_ocupacion)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución estimada ocupacional de la población ocupada",
+       x = NULL, y = "Proporción") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+
+
+```
+
+# Nivel de ingresos por ocupación
+
+Poblacón ocupada por sexo y grupos de ocupación, según el nivel de ingresos. Hoja TAB17.
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+
+
+data_ing <- read_excel("./data_input/A_6_PO_ingreso_3t.xlsx")
+
+orden_ocupacion <- c("Profesionales, técnicos y trabajadores del arte", 
+                     "Trabajadores de la educación", "Funcionarios y directivos", 
+                     "Oficinistas", "Trabajadores industriales, artesanos y ayudantes", 
+                     "Comerciantes", "Operadores de transportes", "Trabajadores en servicios personales", "Trabajadores en protección y vigilancia", "Trabajadores agropecuarios", "No especificado")
+
+orden_nivel_ingreso <- c("Hasta un s.m.", "1 a 2 s.m.", "2 a 3 s.m.", "3 a 5 s.m.",
+                         "Más de 5 s.m.", "No ingresos", "No especifica")
+
+data_ing$Grupo_ocupacion <- factor(data_ing$Grupo_ocupacion, levels = orden_ocupacion)
+data_ing$label_ocupacion <- factor(data_ing$label_ocupacion)
+data_ing$Sexo <- factor(data_ing$Sexo, levels = c("Hombres", "Mujeres"))
+data_ing$Nivel_ingresos <- factor(data_ing$Nivel_ingresos, levels = orden_nivel_ingreso)
+
+
+
+ggplot(data_ing, aes(x = label_ocupacion, y = Pob_est, fill = Nivel_ingresos)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución de ingresos por ocupación",
+       x = "Ocupación", y = "Población") +
+  theme_minimal(base_size = 12) +
+  theme(
+    #axis.text.x        = element_text(angle = 90),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+data_ing |> filter(Sexo == "Hombres") |>
+ggplot(aes(x = label_ocupacion, y = Pob_est, fill = Nivel_ingresos)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución de ingresos por ocupación-Hombres",
+       x = "Ocupación", y = "Población") +
+  theme_minimal(base_size = 12) +
+  theme(
+    #axis.text.x        = element_text(angle = 90),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+data_ing |> filter(Sexo == "Mujeres") |>
+ggplot(aes(x = label_ocupacion, y = Pob_est, fill = Nivel_ingresos)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución de ingresos por ocupación-Mujeres",
+       x = "Ocupación", y = "Población") +
+  theme_minimal(base_size = 12) +
+  theme(
+    #axis.text.x        = element_text(angle = 90),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+
+
+```
+

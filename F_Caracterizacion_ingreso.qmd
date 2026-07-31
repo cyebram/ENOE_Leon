@@ -1,0 +1,536 @@
+---
+title: "Caracterización del ingreso — PEA ocupada, León 2025"
+subtitle: "Sexo × Edad × Ocupación × Ingreso (microdatos ENOE)"
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    df-print: paged
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| code-fold: true
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggridges)
+library(scales)
+library(readr)
+library(writexl)
+
+# --- Parámetros reproducibles ---------------------------------------------
+ruta_extracto <- "./data_input/enoe_leon_2025.csv"  # extracto filtrado (ajusta la ruta)
+ruta_params   <- "./data_output/params_ingreso_edad.xlsx"
+set.seed(2025)     # semilla para la imputación truncada
+k_mean <- 5        # encogimiento de meanlog (celda edad -> ocup_sexo)
+k_sd   <- 11       # encogimiento de sdlog   (ocup_sexo   -> ocup)
+```
+
+Este documento toma la **PEA ocupada con ocupación especificada** y construye la distribución de ingreso lista para sembrar la población sintética. La lógica es la de tres estados que definimos:
+
+- **Estado 1** — `ingocup > 0`: monto reportado. Base para ajustar la forma.
+- **Estado 2** — `ingocup == 0` y `ing7c ∈ {1..5}`: perceptor positivo con rango
+  conocido pero sin monto. Se **imputa dentro de su bracket**.
+- **Estado 3** — `ingocup == 0` y `ing7c == 6`: cero real (no percibe). Masa
+  puntual en cero; no se imputa positivo.
+
+Los `ing7c == 7` (no especificado) se excluyen del ajuste bajo supuesto MAR: no informan la forma y, en el generador, esas personas reciben ingreso sorteado de la log-normal de su grupo.
+
+## Datos y recodificación
+
+```{r datos}
+#| code-fold: true
+
+orden_sexo <- c("Hombres", "Mujeres")
+
+orden_grupos_edad <- c(
+  "15 a 19 años", "20 a 24 años", "25 a 29 años", "30 a 34 años",
+  "35 a 39 años", "40 a 44 años", "45 a 49 años", "50 a 54 años",
+  "55 a 59 años", "60 a 64 años", "65 años y más"
+)
+
+orden_ocupacion <- c(
+  "No aplica", "Profesionales, técnicos y trabajadores del arte",
+  "Trabajadores de la educación", "Funcionarios y directivos",
+  "Oficinistas", "Trabajadores industriales, artesanos y ayudantes",
+  "Comerciantes", "Operadores de transportes",
+  "Trabajadores en servicios personales",
+  "Trabajadores en protección y vigilancia",
+  "Trabajadores agropecuarios", "No especificado"
+)
+
+enoe <- read_csv(ruta_extracto, locale = locale(encoding = "latin1"),
+                 show_col_types = FALSE)
+names(enoe) <- tolower(names(enoe))
+enoe <- enoe |> filter(eda < 98)
+
+enoe <- enoe |>
+  mutate(
+    ingocup  = as.numeric(ingocup),
+    ing7c    = as.integer(ing7c),
+    fac_tri  = as.numeric(fac_tri),
+    eda      = as.integer(eda),
+    salario  = as.numeric(salario),                       # SM mensual del periodo
+    sexo     = factor(as.integer(sex), levels = c(1, 2), labels = orden_sexo),
+    # grupo_edad quinquenal desde eda12c (12 = no especificado -> NA)
+    grupo_edad = factor(if_else(as.integer(eda12c) == 12L, NA_integer_,
+                                as.integer(eda12c)),
+                        levels = 1:11, labels = orden_grupos_edad),
+    div_ocup = factor(as.integer(c_ocu11c), levels = 0:11,
+                      labels = orden_ocupacion)
+  )
+
+enoe <- enoe |> mutate(fac_anual = round(fac_tri / 4, 0), .before = sex)
+
+# Salario mínimo mensual (constante en el periodo); se lee del propio dato
+SM <- unique(enoe$salario)
+# Se verificó la unicidad del salario mínimo mensual SM = 8364
+```
+
+## Universo y clasificación en tres estados
+
+Todas las estimaciones se **ponderan**, porque la ENOE es una muestra probabilística
+y no autoponderada. `fac_tri` es el **factor de expansión trimestral**: el número de
+personas de la población real que representa cada registro (ya incorpora la
+probabilidad de selección de la vivienda, el ajuste por no respuesta y la calibración
+a las proyecciones de población de INEGI). Como el extracto **apila los cuatro
+trimestres de 2025** y cada `fac_tri` expande a la población de *su* trimestre,
+sumarlos cuadruplicaría la población; por eso se usa `fac_anual = fac_tri / 4`, que
+promedia al tamaño poblacional anual. Para las medias y varianzas ponderadas el
+factor de 1/4 es una constante que no altera la forma, pero deja las cifras legibles
+como población y evita cuadruplicar los conteos.
+
+```{r universo-estados}
+#| code-fold: true
+
+# PEA ocupada, con ocupación especificada (excluye "No especificado" = 11)
+enoe_pea <- enoe |>
+  filter(clase1 == 1, clase2 == 1, c_ocu11c != 11, ing7c != 7) |>
+  mutate(
+    ingreso_estado = case_when(
+      ingocup >  0                     ~ "positivo",
+      ingocup == 0 & ing7c %in% 1:5    ~ "rango",      # imputar por bracket
+      ingocup == 0 & ing7c == 6        ~ "cero_real",  # no percibe
+      TRUE                             ~ NA_character_
+    ),
+    div_ocup = droplevels(div_ocup)
+  )
+
+# Diagnóstico: tamaño de cada estado (muestral y expandido)
+enoe_pea |>
+  group_by(ingreso_estado) |>
+  summarise(n_muestral = n(),
+            pob_expandida = sum(fac_anual),
+            .groups = "drop") |>
+  mutate(pct_muestral  = percent(n_muestral / sum(n_muestral), 0.1),
+         pct_expandido = percent(pob_expandida / sum(pob_expandida), 0.1))
+```
+
+El estado *rango* es la pieza que, de omitirse, sesgaría la distribución hacia arriba: son perceptores de ingreso bajo (mayoría en ≤2 s.m.) que declaran rango pero no monto. Recuperarlos es lo que evita reinflar la cuota de auto.
+
+```{r rango-barras}
+#| code-fold: true
+
+etq_ing7c <- c("1" = "Hasta 1 s.m.", "2" = "1 a 2 s.m.", "3" = "2 a 3 s.m.",
+               "4" = "3 a 5 s.m.", "5" = "Más de 5 s.m.")
+
+enoe_pea |>
+  filter(ingreso_estado == "rango") |>
+  count(ing7c) |>
+  mutate(nivel = factor(etq_ing7c[as.character(ing7c)], levels = etq_ing7c)) |>
+  ggplot(aes(x = nivel, y = n)) +
+  geom_col(fill = "#4575b4", width = 0.7) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3.5) +
+  labs(x = "Nivel de ingreso declarado (ing7c)",
+       y = "Frecuencia muestral",
+       title = "Estado \"rango\": bracket conocido, monto faltante",
+       subtitle = "PEA ocupada, León 2025 · ingocup = 0, ing7c: 1–5") +
+  theme_minimal(base_size = 11)
+```
+
+## Ajuste de la forma
+
+### Por qué una log-normal
+
+El ingreso laboral es positivo, fuertemente sesgado a la derecha y con cola larga
+por arriba; al tomar logaritmo esa asimetría se endereza y la distribución se ve
+aproximadamente **normal**. Ésa es la definición de la log-normal: una variable cuyo
+logaritmo es normal. No es solo un ajuste conveniente — tiene una historia
+generadora (ley de Gibrat): el ingreso crece de forma *multiplicativa* (los aumentos
+son un porcentaje de lo ya ganado), y el producto de muchos factores lleva, por el
+teorema del límite central sobre el `log`, a que `log(ingreso)` sea normal.
+
+Tiene **dos parámetros** interpretables: `meanlog` (la ubicación en escala log;
+`exp(meanlog)` es la **mediana** en pesos) y `sdlog` (la dispersión, una medida de
+desigualdad interna del grupo). Los **estimadores** son directos y ponderados: la
+media ponderada de `log(ingreso)` para `meanlog`, y la raíz de la varianza ponderada
+de `log(ingreso)` para `sdlog` (pesos `fac_anual`). Se ajusta solo sobre la parte
+continua positiva: la masa en cero va aparte (estado 3), y la cola alta extrema —que
+sigue una Pareto, más pesada— queda algo subrepresentada, cosa de segundo orden aquí.
+
+### Encogimiento por celda (pooling parcial)
+
+En lugar de un umbral duro, se usa **encogimiento continuo** (Bayes empírico): cada
+celda toma sus propios parámetros en proporción a la información que tiene y pide
+prestado el resto a su nivel padre, con peso `w = n / (n + k)`. Así no hay saltos por
+"fallar por una observación" y las celdas flacas se estabilizan sin descartar señal.
+Los dos parámetros se tratan distinto porque su estructura difiere:
+
+- **`meanlog`** varía por edad (perfil ingreso–edad tipo Mincer): se estima por celda
+  `ocup × sexo × edad` y se encoge hacia el padre `ocup × sexo` con `k_mean = 5`.
+- **`sdlog`** casi no cambia con la edad: se fija a nivel `ocup × sexo` y se encoge
+  hacia `ocup` con `k_sd = 11`, constante por edad.
+
+Los valores de `k` salen de la razón varianza-dentro / varianza-entre en estos datos.
+En modelo: `ingreso ~ LogNormal(meanlog(ocup, sexo, edad), sdlog(ocup, sexo))`.
+
+```{r funcion-ajuste}
+#| code-fold: true
+
+# Estimadores ponderados en escala log (espera columna 'ingreso' positiva)
+ln_stats <- function(df) {
+  x <- log(df$ingreso); w <- df$fac_anual
+  ml <- weighted.mean(x, w)
+  sl <- sqrt(weighted.mean((x - ml)^2, w))
+  tibble(meanlog = ml, sdlog = sl, n = nrow(df))
+}
+
+w_shrink <- function(n, k) n / (n + k)
+
+# Ajuste log-normal con encogimiento jerárquico, reutilizable.
+#  base_fit : registros positivos (columnas div_ocup, sexo, grupo_edad, ingreso, fac_anual)
+#  universo : define la rejilla de celdas que necesitan parámetros (positivos + rango)
+estimar_params <- function(base_fit, universo, k_mean, k_sd) {
+  par_gse <- base_fit |> group_by(div_ocup, sexo, grupo_edad) |> group_modify(~ ln_stats(.x)) |>
+    ungroup() |> rename(ml_gse = meanlog, sl_gse = sdlog, n_gse = n)
+  par_gs  <- base_fit |> group_by(div_ocup, sexo) |> group_modify(~ ln_stats(.x)) |>
+    ungroup() |> rename(ml_gs = meanlog, sl_gs = sdlog, n_gs = n)
+  par_g   <- base_fit |> group_by(div_ocup) |> group_modify(~ ln_stats(.x)) |>
+    ungroup() |> rename(ml_g = meanlog, sl_g = sdlog, n_g = n)
+  par_all <- ln_stats(base_fit)
+
+  universo |>
+    filter(!is.na(grupo_edad)) |>
+    distinct(div_ocup, sexo, grupo_edad) |>
+    left_join(par_gse, by = c("div_ocup", "sexo", "grupo_edad")) |>
+    left_join(par_gs,  by = c("div_ocup", "sexo")) |>
+    left_join(par_g,   by = "div_ocup") |>
+    mutate(
+      n_gse = coalesce(n_gse, 0L),
+      ml_padre = coalesce(ml_gs, ml_g, par_all$meanlog),   # respaldo ante celdas vacías
+      sl_padre = coalesce(sl_g, par_all$sdlog),
+      w_mean  = w_shrink(n_gse, k_mean),
+      meanlog = if_else(n_gse > 0, w_mean * ml_gse + (1 - w_mean) * ml_padre, ml_padre),
+      w_sd    = w_shrink(coalesce(n_gs, 0L), k_sd),
+      sdlog   = w_sd * coalesce(sl_gs, sl_padre) + (1 - w_sd) * sl_padre
+    ) |>
+    select(div_ocup, sexo, grupo_edad, meanlog, sdlog, n_gse, n_gs, w_mean)
+}
+```
+
+### Ajuste preliminar (solo para imputar)
+
+Estos parámetros se estiman sobre el **estado 1** y tienen un único propósito:
+alimentar el sorteo truncado que imputa el estado 2. Están sesgados hacia arriba
+(excluyen a los perceptores bajos del estado 2), así que **no** son los de generación
+— ésos se reajustan más abajo, sobre la población positiva completa.
+
+```{r ajuste-preliminar}
+#| code-fold: true
+
+pos <- enoe_pea |> filter(ingreso_estado == "positivo") |> mutate(ingreso = ingocup)
+
+params_prelim <- estimar_params(pos, universo = enoe_pea, k_mean = k_mean, k_sd = k_sd)
+params_prelim
+```
+
+## Límites de los brackets en pesos
+
+```{r brackets}
+#| code-fold: true
+
+# ing7c -> [inferior, superior] en múltiplos de SM, y su equivalente en pesos
+brackets <- tibble::tribble(
+  ~ing7c, ~sm_low, ~sm_high,
+      1L,      0,       1,
+      2L,      1,       2,
+      3L,      2,       3,
+      4L,      3,       5,
+      5L,      5,     Inf
+) |>
+  mutate(peso_low = sm_low * SM, peso_high = sm_high * SM)
+
+brackets
+```
+
+## Imputación del estado 2 (sorteo truncado por bracket)
+
+Cada perceptor de rango recibe un valor sorteado de la log-normal **preliminar** de su
+celda, **truncada** a los límites en pesos de su bracket `ing7c`. La truncación ancla
+el nivel al rango declarado (un hecho observado), así que el sesgo del ajuste
+preliminar solo afecta la forma *dentro* del bracket, no el nivel.
+
+```{r imputacion}
+#| code-fold: true
+
+# Sorteo de una log-normal(meanlog, sdlog) truncada a [lower, upper]
+rlnorm_trunc <- function(meanlog, sdlog, lower, upper) {
+  pl <- plnorm(lower, meanlog, sdlog)
+  pu <- plnorm(upper, meanlog, sdlog)
+  qlnorm(runif(length(meanlog), pl, pu), meanlog, sdlog)
+}
+
+rango_imp <- enoe_pea |>
+  filter(ingreso_estado == "rango", !is.na(grupo_edad)) |>
+  left_join(params_prelim, by = c("div_ocup", "sexo", "grupo_edad")) |>
+  left_join(brackets,      by = "ing7c") |>
+  mutate(ingreso = rlnorm_trunc(meanlog, sdlog, peso_low, peso_high))
+
+# Población positiva COMPLETA = estado 1 (reportado) + estado 2 (imputado)
+ingreso_positivo <- bind_rows(
+  pos       |> mutate(origen = "reportado"),
+  rango_imp |> mutate(origen = "imputado")
+) |>
+  select(sexo, grupo_edad, eda, div_ocup, ing7c, ingreso, origen, fac_anual, ur)
+
+# Verificación: el 100 % de los imputados cae dentro de su bracket
+ingreso_positivo |>
+  filter(origen == "imputado") |>
+  left_join(brackets, by = "ing7c") |>
+  summarise(dentro_bracket = mean(ingreso >= peso_low & ingreso <= peso_high))
+```
+
+## Ajuste final y parámetros de generación
+
+Ahora se **reajusta** la misma maquinaria sobre `ingreso_positivo` (reportados +
+imputados). Esto des-sesga los parámetros: el ajuste preliminar sobre el estado 1
+sobrestima la mediana hasta ~18 % en los grupos con mucha proporción de rango
+(funcionarios, operadores), porque excluía a los perceptores bajos. Una sola pasada
+basta: como los imputados quedaron anclados a su bracket, jalan la media a su nivel
+correcto sin necesidad de iterar.
+
+Se agrega `p_cero` (probabilidad de la masa en cero, estado 3) por celda: proporción
+ponderada de `cero_real` entre los ocupados de la celda; `0` donde no hay ceros y `0`
+en celdas vacías, nunca `NA`. Con eso, el generador tiene todo: `meanlog`, `sdlog` y
+`p_cero` por `div_ocup × sexo × grupo_edad`.
+
+```{r ajuste-final}
+#| code-fold: true
+
+# Parámetros DEFINITIVOS: mismo pooling, ahora sobre el positivo completo
+params <- estimar_params(ingreso_positivo, universo = enoe_pea,
+                         k_mean = k_mean, k_sd = k_sd)
+
+# Masa en cero real por celda (no depende de la imputación)
+p_cero_cell <- enoe_pea |>
+  filter(!is.na(grupo_edad)) |>
+  group_by(div_ocup, sexo, grupo_edad) |>
+  summarise(p_cero = weighted.mean(ingreso_estado == "cero_real", fac_anual),
+            .groups = "drop")
+
+params <- params |>
+  left_join(p_cero_cell, by = c("div_ocup", "sexo", "grupo_edad")) |>
+  mutate(p_cero = coalesce(p_cero, 0))
+
+params
+
+# Escritura del archivo de parámetros de generación
+write_xlsx(params, ruta_params)
+```
+
+> Nota de generación: `p_cero` está a nivel celda (según lo definido). Para las celdas
+> que se generen por vía **paramétrica** (grupos flacos), conviene consumir una
+> `p_cero` a nivel `ocup × sexo` en lugar de la de celda, para no arrastrar artefactos
+> de una sola observación (p. ej. agropecuarias mayores con `p_cero = 1`). En la parte
+> de **remuestreo** la `p_cero` no se usa: los ceros viajan como registros reales.
+
+## Caracterización
+
+Las gráficas se construyen sobre `ingreso_positivo` (reportados + imputados). Orden de los grupos por mediana ponderada de ingreso, reutilizado en todas.
+
+```{r orden-mediana}
+w_median <- function(x, w) {
+  o <- order(x); x <- x[o]; w <- w[o]
+  x[which(cumsum(w) / sum(w) >= 0.5)[1]]
+}
+
+orden_medianas <- ingreso_positivo |>
+  group_by(div_ocup) |>
+  summarise(med = w_median(ingreso, fac_anual), .groups = "drop") |>
+  arrange(med) |> pull(div_ocup)
+
+ingreso_positivo <- ingreso_positivo |>
+  mutate(div_ocup = factor(div_ocup, levels = orden_medianas))
+```
+
+### 1. Forma del ingreso por ocupación y sexo
+
+```{r viz-ridge, fig.height=7, fig.width=9}
+#| code-fold: true
+
+ggplot(ingreso_positivo,
+       aes(x = ingreso, y = div_ocup, fill = div_ocup, weight = fac_anual)) +
+  geom_density_ridges(scale = 1.6, alpha = 0.85, color = "white", linewidth = 0.2) +
+  facet_wrap(~ sexo) +
+  scale_x_log10(labels = label_number(scale_cut = cut_short_scale()),
+                breaks = c(1e3, 3e3, 1e4, 3e4, 1e5)) +
+  scale_fill_brewer(palette = "Spectral", guide = "none") +
+  labs(x = "Ingreso mensual (escala log)", y = NULL,
+       title = "Distribución de ingreso por grupo ocupacional",
+       subtitle = "PEA ocupada, León 2025 · positivos reportados + imputados") +
+  theme_minimal(base_size = 11)
+
+# ggsave("fig_ingreso_ridge.png", width = 9, height = 7, dpi = 300)
+```
+
+### 2. Perfil ingreso–edad
+
+Aquí la edad va **continua** (no agrupada): es el gradiente que alimenta el modelo. `geom_smooth` respeta la ponderación vía `weight`.
+
+```{r viz-perfil, fig.height=8, fig.width=10}
+#| code-fold: true
+
+ggplot(ingreso_positivo,
+       aes(x = eda, y = ingreso, color = sexo, weight = fac_anual)) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 0.9) +
+  facet_wrap(~ div_ocup, ncol = 3, scales = "free_y",
+             labeller = label_wrap_gen(28)) +
+  scale_y_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_color_manual(values = c(Hombres = "#1f4e79", Mujeres = "#c0392b")) +
+  labs(x = "Edad", y = "Ingreso mensual (escala log)", color = NULL,
+       title = "Perfil ingreso–edad por grupo ocupacional") +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "top")
+
+# ggsave("fig_ingreso_edad.png", width = 10, height = 8, dpi = 300)
+```
+
+### 3. Masa en cero real (no percibe)
+
+Los ceros verdaderos no caben en la gráfica continua pero son parte del modelo: su proporción por grupo es la probabilidad de masa puntual en cero.
+
+```{r viz-cero, fig.height=5, fig.width=9}
+#| code-fold: true
+
+share_cero <- enoe_pea |>
+  mutate(cero = ingreso_estado == "cero_real") |>
+  group_by(div_ocup, sexo) |>
+  summarise(p_cero = weighted.mean(cero, fac_anual), .groups = "drop")
+
+ggplot(share_cero, aes(x = p_cero, y = div_ocup, fill = sexo)) +
+  geom_col(position = position_dodge(0.7), width = 0.65) +
+  scale_x_continuous(labels = percent) +
+  scale_fill_manual(values = c(Hombres = "#1f4e79", Mujeres = "#c0392b")) +
+  labs(x = "Proporción sin ingreso (no percibe)", y = NULL, fill = NULL,
+       title = "Ocupados sin ingreso monetario por grupo") +
+  theme_minimal(base_size = 11)
+```
+
+### 4. Mediana por ocupación × grupo de edad
+
+Escala de color **logarítmica** (`trans = "log10"`): el ingreso abarca casi dos órdenes de magnitud, así que en escala lineal una sola celda alta aplasta el resto al oscuro. En log, el rango donde vive la mayoría queda diferenciado.
+
+```{r viz-heatmap, fig.height=6, fig.width=9}
+#| code-fold: true
+
+ingreso_positivo |>
+  filter(!is.na(grupo_edad)) |>
+  group_by(div_ocup, grupo_edad) |>
+  summarise(med = w_median(ingreso, fac_anual), n = n(), .groups = "drop") |>
+  # mutate(med = if_else(n < 20, NA_real_, med)) |>  # opcional: ocultar celdas flacas
+  ggplot(aes(x = grupo_edad, y = div_ocup, fill = med)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "viridis", trans = "log10",
+                       labels = label_number(scale_cut = cut_short_scale()),
+                       na.value = "grey90") +
+  labs(x = NULL, y = NULL, fill = "Mediana",
+       title = "Mediana de ingreso por ocupación y edad") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+# Distribución ocupacional  
+
+
+```{r}
+#| code-fold: true
+#| fig-align: center
+#| fig-width: 10
+
+cero_real <- enoe_pea |>
+  filter(ingreso_estado == "cero_real") |>
+  dplyr::select(sexo, grupo_edad, eda, div_ocup, ing7c, ingreso = ingocup, fac_anual, ur)
+
+cero_real <- cero_real |> 
+  mutate(origen = "reportado", .before = fac_anual)
+
+
+ingreso_gral <- bind_rows(ingreso_positivo, cero_real)
+
+
+ocup_dist <- ingreso_gral |>
+  group_by(sexo, grupo_edad, div_ocup) |>
+  summarise(pob_expandida = sum(fac_anual),
+            .groups = "drop") 
+  
+  
+  
+  
+edades_pea <-   ocup_dist |> group_by(sexo, grupo_edad) |>
+  summarise(pob_edad  = sum(pob_expandida),
+            .groups = "drop") 
+
+
+
+
+ocup_dist <- ocup_dist |>
+  left_join(edades_pea, by = c("sexo", "grupo_edad")) |>
+  mutate(proporcion = pob_expandida / pob_edad)
+
+
+
+ocup_dist |> filter(sexo == "Hombres") |>
+ggplot(aes(x = grupo_edad, y = proporcion, fill = div_ocup)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución estimada ocupacional de la población ocupada: Hombres",
+       x = NULL, y = "Proporción") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 1, vjust = 1.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+ocup_dist |> filter(sexo == "Mujeres") |>
+ggplot(aes(x = grupo_edad, y = proporcion, fill = div_ocup)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución estimada ocupacional de la población ocupada: Mujeres",
+       x = NULL, y = "Proporción") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 1, vjust = 1.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+
+
+
+write_xlsx(ingreso_gral, "./data_output/ingreso_gral.xlsx")
+write_xlsx(ocup_dist, "./data_output/ocup_dist.xlsx")
+```
