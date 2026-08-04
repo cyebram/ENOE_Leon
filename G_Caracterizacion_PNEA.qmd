@@ -1,0 +1,206 @@
+---
+title: "Caracterización PNEA, León 2025"
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    df-print: paged
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggridges)
+library(scales)
+library(readr)
+library(writexl)
+
+# --- Parámetros reproducibles ---------------------------------------------
+ruta_extracto <- "./data_input/enoe_leon_2025.csv"  # extracto filtrado (ajusta la ruta)
+set.seed(2025)     # semilla para la imputación truncada
+```
+
+
+
+## Datos y recodificación
+
+Se filtran observaciones de la PNEA (clase1 == 2) y se recodifican las variables de interés: sexo, grupo de edad y división de actividad. Además, se calcula la población expandida anual a partir del factor trimestral.
+
+
+```{r datos}
+orden_sexo <- c("Hombres", "Mujeres")
+
+orden_grupos_edad <- c(
+  "15 a 19 años", "20 a 24 años", "25 a 29 años", "30 a 34 años",
+  "35 a 39 años", "40 a 44 años", "45 a 49 años", "50 a 54 años",
+  "55 a 59 años", "60 a 64 años", "65 años y más"
+)
+
+orden_actividad <- c(
+  "Estudiantes", "Quehaceres domésticos", "Pensionados y jubilados",
+  "Incapacitados permanentes", "Otros no activos"
+)
+
+enoe <- read_csv(ruta_extracto, locale = locale(encoding = "latin1"),
+                 show_col_types = FALSE)
+names(enoe) <- tolower(names(enoe))
+enoe <- enoe |> filter(eda < 98)
+
+enoe_pnea <- enoe |> filter(clase1 == 2 )
+
+
+enoe_pnea <- enoe_pnea |>
+  mutate(
+    fac_tri  = as.numeric(fac_tri),
+    eda      = as.integer(eda),
+    sexo     = factor(as.integer(sex), levels = c(1, 2), labels = orden_sexo),
+    # grupo_edad quinquenal desde eda12c (12 = no especificado -> NA)
+    grupo_edad = factor(if_else(as.integer(eda12c) == 12L, NA_integer_,
+                                as.integer(eda12c)),
+                        levels = 1:11, labels = orden_grupos_edad),
+    div_act = factor(as.integer(c_inac5c), levels = 1:5,
+                      labels = orden_actividad)
+  )
+
+enoe_pnea <- enoe_pnea |> mutate(fac_anual = round(fac_tri / 4, 0), .before = sex)
+
+enoe_pnea <- enoe_pnea |> select(sexo, grupo_edad, eda, div_act, fac_anual)
+
+```
+
+
+
+
+
+
+
+# Distribución actividades
+
+
+## Con incapacidad
+
+```{r}
+#| fig-align: center
+#| fig-width: 10
+
+actividad_dist <- enoe_pnea |>
+  group_by(sexo, grupo_edad, div_act) |>
+  summarise(pob_expandida = sum(fac_anual),
+            .groups = "drop") 
+  
+edades_pnea <-   actividad_dist |> group_by(sexo, grupo_edad) |>
+  summarise(pob_edad  = sum(pob_expandida),
+            .groups = "drop") 
+
+actividad_dist <- actividad_dist |>
+  left_join(edades_pnea, by = c("sexo", "grupo_edad")) |>
+  mutate(proporcion = pob_expandida / pob_edad)
+
+
+
+actividad_dist |> filter(sexo == "Hombres") |>
+ggplot(aes(x = grupo_edad, y = proporcion, fill = div_act)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución estimada actividades PNEA: Hombres",
+       x = NULL, y = "Proporción") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 1, vjust = 1.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+actividad_dist |> filter(sexo == "Mujeres") |>
+ggplot(aes(x = grupo_edad, y = proporcion, fill = div_act)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución estimada actividades PNEA: Mujeres",
+       x = NULL, y = "Proporción") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 1, vjust = 1.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+
+write_xlsx(actividad_dist, "./data_output/actividad_pnea.xlsx")
+
+```
+
+## Sin incapacidad
+
+```{r}
+#| fig-align: center
+#| fig-width: 10
+
+
+orden_actividad_sinc <- c(
+  "Estudiantes", "Quehaceres domésticos", "Pensionados y jubilados", "Otros no activos"
+)
+
+
+enoe_pnea_sinc <- enoe_pnea |> filter(div_act != "Incapacitados permanentes")
+
+enoe_pnea_sinc$div_act <- factor(enoe_pnea_sinc$div_act, levels = orden_actividad_sinc)
+
+actividad_dist_sinc <- enoe_pnea_sinc |>
+  group_by(sexo, grupo_edad, div_act) |>
+  summarise(pob_expandida = sum(fac_anual),
+            .groups = "drop") 
+  
+edades_pnea_sinc <-   actividad_dist_sinc |> group_by(sexo, grupo_edad) |>
+  summarise(pob_edad  = sum(pob_expandida),
+            .groups = "drop") 
+
+actividad_dist_sinc <- actividad_dist_sinc |>
+  left_join(edades_pnea_sinc, by = c("sexo", "grupo_edad")) |>
+  mutate(proporcion = pob_expandida / pob_edad)
+
+
+
+actividad_dist_sinc |> filter(sexo == "Hombres") |>
+ggplot(aes(x = grupo_edad, y = proporcion, fill = div_act)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución estimada actividades PNEA: Hombres",
+       x = NULL, y = "Proporción") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 1, vjust = 1.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+actividad_dist_sinc |> filter(sexo == "Mujeres") |>
+ggplot(aes(x = grupo_edad, y = proporcion, fill = div_act)) +
+  geom_col(width = 0.75) +
+  scale_fill_brewer(palette = "Spectral", name = NULL) +
+  labs(title = "Distribución estimada actividades PNEA: Mujeres",
+       x = NULL, y = "Proporción") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 1, vjust = 1.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    plot.title         = element_text(face = "bold", size = 13)
+  )
+
+
+write_xlsx(actividad_dist_sinc, "./data_output/actividad_pnea_sinc.xlsx")
+
+```
